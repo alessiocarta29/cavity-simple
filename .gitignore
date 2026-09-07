@@ -1,6 +1,24 @@
-build/
+# binari e oggetti
+cavity
 *.o
 *.out
-*.vtk
-*.csv
+*.exe
+
+# output del solutore
+field.csv
+params.csv
+campo.csv
+parametri.csv
+*.png
+*.pdf
+
+# python
 __pycache__/
+*.pyc
+.venv/
+
+# editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
