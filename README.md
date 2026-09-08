@@ -87,52 +87,41 @@ see limitation 1 below.
 
 ### Why the convection scheme is deferred, not selected
 
-Central differencing is second-order accurate and unbounded. Upwind is
-first-order and unconditionally stable. The usual way to offer both is a flag
-that selects which set of coefficients goes into the matrix. This solver does
-something different, and the reason is that the choice is not really between two
-schemes but between two matrices.
+The earlier version of this solver put central-difference coefficients directly
+into the matrix. That works until it does not: on a 32 × 32 grid at Re = 1000 it
+diverges outright, while the finer grids converge. The cell Peclet number there
+is above 30, and §5.8 explains what goes wrong — of the two schemes only upwind
+satisfies `A_P ≥ Σ|A_l|`, the sufficient condition for iterative solvers to
+converge. Past a cell Peclet number of 2 the central matrix loses that property,
+and SIP is left with a system it has no guarantee of handling.
 
-The face value we want is a blend,
+Deferred correction keeps the good matrix and gets the good scheme anyway. The
+face value we want is a blend, and it can be rewritten without approximation as
 
-    φ_f = γ · φ_f^CDS + (1 − γ) · φ_f^UDS
+    φ_f = γ·φ_f^CDS + (1 − γ)·φ_f^UDS  =  φ_f^UDS + γ·( φ_f^CDS − φ_f^UDS )
 
-which can be rewritten, without approximation, as
+The first term goes into the matrix, so the matrix is always upwind whatever `γ`
+is. The second is evaluated with the previous iterate and moved to the source
+term. At convergence the outer iteration stops changing the solution, so the
+lagged term equals what it would have been implicitly: the explicit upwind
+contribution cancels the implicit one, and what is actually solved is the
+blended scheme. Lagging a term changes how fast the iteration converges, not
+what it converges to.
 
-    φ_f = φ_f^UDS + γ · ( φ_f^CDS − φ_f^UDS )
+So the change buys three things. The solver now converges where it previously
+crashed. One code path covers CDS, UDS and everything between, instead of two
+implementations that can drift apart. And it is the mechanism production codes
+use, OpenFOAM included, so the work transfers.
 
-The first term goes into the matrix. The second is evaluated with the previous
-iterate and moved to the source term. So the matrix always holds upwind
-coefficients, whatever `γ` is, and the blending happens entirely through the
-right-hand side.
+The cost is that the converged solution is no longer identical to what the
+central-coefficient matrix produced. Changing the matrix changes `A_P`, and
+`A_P` feeds both the Rhie–Chow damping and the pressure-correction equation. At
+convergence the mass imbalance vanishes, which leaves `A_P → 4μ + A_wall` for
+central differences but `A_P → Σ max(m,0) + 4μ + A_wall` for upwind — much
+larger where convection dominates. These are two different discretisations
+heading for the same continuum solution. The results section quantifies the gap
+and shows it shrinking with refinement, as it must.
 
-At convergence the outer iteration stops changing the solution, so the lagged
-term equals what it would have been if treated implicitly. The explicit upwind
-contribution cancels the implicit one and the equation actually satisfied is the
-one for the blended scheme. Lagging a term changes how fast the iteration
-converges; it does not change what it converges to.
-
-What this buys is diagonal dominance. §5.8 notes that of the two schemes only
-upwind satisfies `A_P ≥ Σ|A_l|`, which is the sufficient condition for iterative
-solvers to converge. With central coefficients in the matrix, the condition is
-lost as soon as the cell Peclet number exceeds 2, and SIP is left solving a
-system it has no guarantee of handling. The measured consequence is in the
-results section: on a 32 × 32 grid at Re = 1000, the earlier version of this
-solver with central coefficients in the matrix diverges outright, while the
-deferred-correction version converges to the same answer the finer grids agree
-on.
-
-There are two costs, and neither is hidden.
-
-The deferred term is lagged, so it slows the outer iteration. At `γ = 1` in a
-strongly convective flow, more outer iterations are needed than the same problem
-would need with central coefficients implicit — assuming those converged at all.
-
-Changing the matrix changes `A_P`, and `A_P` feeds Rhie–Chow and the
-pressure-correction equation. The converged solution is therefore not identical
-to what a central-coefficient matrix would produce; it is a different
-discretisation of the same equations. The results section quantifies the
-difference and shows it shrinking with refinement, as it must.
 ### The pressure system is singular
 
 Pressure is only defined up to a constant, so the pressure-correction matrix has
@@ -231,16 +220,7 @@ showing up as a crash rather than as a theorem.
 
 ### The two formulations are not identical, and should not be
 
-With `gamma = 1` the new solver does not reproduce the old CDS-in-matrix result
-exactly. It cannot, and the reason is worth spelling out.
-
-The diagonal `A_P` is different in the two cases, and `A_P` feeds both the
-Rhie–Chow damping and the pressure-correction equation. At convergence the mass
-imbalance vanishes, which leaves `A_P → 4μ + A_wall` for central differences but
-`A_P → Σ max(m,0) + 4μ + A_wall` for upwind. Where convection dominates, the
-second is much larger.
-
-So the gap between the two should grow with convection and shrink with grid
+The gap between the two should grow with convection and shrink with grid
 refinement. It does. Largest difference in `u`, as a fraction of the peak
 velocity, at N = 64:
 
