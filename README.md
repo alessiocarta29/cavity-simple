@@ -202,21 +202,86 @@ iterations should not stop before three to five.
 Reference values from §8.4.1 at Re = 1000: `psi_min = -0.11893`,
 `psi_max = 0.00173`.
 
-### The deferred correction buys robustness
+### What the deferred correction is for
 
-An earlier version of this solver put the central-difference coefficients
-straight into the matrix. Switching to implicit upwind plus deferred correction
-changes what the solver can handle on a coarse grid:
+An earlier version of this solver put central-difference coefficients directly
+into the matrix. It is faster where it works — and it stops working sooner than
+one might expect.
 
-| Grid | CDS in the matrix | Deferred correction, `gamma = 1` |
-|---|---|---|
-| 32 × 32 | diverges (NaN) | converges |
-| 64 × 64 | converges | converges |
-| 128 × 128 | converges | converges |
+Grid fixed at 64 × 64, Reynolds number increasing, everything else identical
+(`nswP = 20`, `nswUV = 3`, `α_u = 0.8`, `α_p = 0.2`, four orders of residual
+reduction):
 
-At N = 32 and Re = 1000 the cell Peclet number is above 30. The central scheme
-loses diagonal dominance and SIP fails outright. This is the condition of §5.8
-showing up as a crash rather than as a theorem.
+| Re | cell Peclet | CDS in the matrix | deferred correction, `gamma = 1` |
+|---|---|---|---|
+| 1000 | ~16 | 682 iter | 890 iter |
+| 2000 | ~31 | diverges | 1533 iter |
+| 3200 | ~50 | diverges | 2244 iter |
+| 5000 | ~78 | diverges | 3165 iter |
+| 7500 | ~117 | diverges | diverges |
+
+Doubling the Reynolds number on the same grid is enough to lose the central
+matrix entirely. The deferred-correction form runs to Re = 5000, an operating
+range five times wider.
+
+The governing parameter is the cell Peclet number, not the grid size. At
+Re = 2000 on 64 × 64 the cell Peclet number is about 31 — the same value reached
+at Re = 1000 on 32 × 32, where the central matrix also diverges. Both failures
+happen at the same place on the same axis. §5.8 gives the reason: of the two
+schemes only upwind satisfies `A_P ≥ Σ|A_l|`, the sufficient condition for
+iterative solvers to converge, and the central matrix loses that property above
+a cell Peclet number of 2. That the solver survives to 16 is luck; the condition
+is sufficient, not necessary, so exceeding it guarantees nothing either way.
+
+The blending factor extends the range further. At Re = 7500 nothing converges
+with `gamma = 1`, but `gamma = 0` converges in 580 iterations. Trading accuracy
+for stability is available as a dial precisely because the matrix does not
+change when the dial moves. With central coefficients in the matrix there is no
+dial.
+
+(At Re = 10000 on this grid nothing converges, including `gamma = 0`. Whether a
+steady solution is reachable there at this resolution, or the under-relaxation
+is simply too aggressive, has not been established.)
+
+Two things this does **not** buy. It does not improve accuracy: at `gamma = 1`
+the scheme solved is the same central scheme, and the agreement with reference
+data is unchanged wherever both formulations converge. And it is not free —
+lagging a term costs about 30% more outer iterations at Re = 1000, measured
+below. The trade is a slower solver over a much wider operating range.
+
+### Iteration counts against the reference
+
+Table 12.1 of the book reports outer iteration counts for this problem on a
+single grid with `α_u = 0.8`, `α_p = 0.2`, non-uniform grid, zero initial field,
+four orders of residual reduction: 250 iterations at 32², 433 at 64², 1352 at
+128².
+
+This solver takes 890 at 64² under nominally matching settings — a factor of
+2.1. Part of that is accounted for and part is not.
+
+**Measured: the deferred correction costs a factor of 1.30.** Running the
+earlier central-matrix version with the same relative stopping criterion and
+identical settings gives 682 iterations against 890. This isolates the cost of
+lagging the correction term, since nothing else differs between the two runs.
+
+**Unaccounted: a factor of 1.58 remains** between 682 and 433. Three candidates,
+none yet demonstrated:
+
+- *Inner solver effort.* The book stops the inner iterations on a relative
+  residual criterion rather than a fixed sweep count. The sweep study in this
+  README shows outer iterations ranging from 2996 to 804 as `nswP` alone varies
+  from 2 to 50, a factor of 3.7 — larger than the entire gap being explained. If
+  the reference solve on the pressure equation is effectively harder than
+  `nswP = 20`, this alone could account for most of it. Testable now.
+- *Grid.* The reference uses a non-uniform grid, this solver a uniform one. The
+  expected sign is unclear: stretched grids have worse aspect ratios and usually
+  converge more slowly, not faster. Not testable until the non-uniform grid is
+  implemented.
+- *Implementation details* not visible in the published description.
+
+The gap that remains unexplained is larger than the part accounted for, so no
+conclusion is drawn here. It is recorded as an open question rather than
+attributed to a plausible cause.
 
 ### The two formulations are not identical, and should not be
 
