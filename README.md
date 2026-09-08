@@ -182,20 +182,7 @@ be partly measuring its own stopping rule. §5.7 gives the targets: inner
 iterations can stop after a reduction of one or two orders of magnitude, outer
 iterations should not stop before three to five.
 
-## Status
 
-- [x] SIP linear solver
-- [x] Momentum equations, deferred correction UDS/CDS
-- [x] Rhie–Chow interpolation
-- [x] SIMPLE loop with pressure correction
-- [x] Relative convergence criterion
-- [x] Runtime parameters and machine-readable output
-- [x] Streamfunction from the vorticity Poisson equation, with cross-checks
-- [x] Inner sweep study
-- [ ] Validation against Ghia et al. (see below)
-- [ ] Non-uniform grid
-- [ ] Grid-convergence study with Richardson extrapolation and GCI
-- [ ] Under-relaxation study
 
 ## Results
 
@@ -368,33 +355,111 @@ pressure correction is a pure Poisson problem with no Dirichlet condition
 anywhere, singular up to a constant and anchored only by the reference cell —
 it is not.
 
-## Verification and validation
+## Validation
 
-**Not complete.** The solver converges, the streamfunction post-processing is
-cross-checked, and the vortex strengths land within a few percent of the
-reference values at N = 64. No comparison against published velocity data has
-been committed yet, and nothing above should be read as one.
+Two independent reference solutions are used, and the choice is deliberate.
 
-Planned, in order:
+**Ghia, Ghia & Shin (1982)** is the conventional benchmark: second-order finite
+differences on a 129 × 129 uniform grid, coupled strongly implicit multigrid,
+tabulated centreline velocities. It is the reference a reader expects to see.
 
-1. Centreline velocity profiles against Ghia, Ghia & Shin (1982) at Re = 100,
-   400 and 1000, with the reference tables transcribed from the paper into
-   `validation/`.
-2. Observed order of accuracy from three systematically refined grids, with GCI.
-3. Reproduction of the under-relaxation map of Fig. 8.13.
+**Erturk, Corke & Gökçöl (2005)** is used because it fails differently. They
+solve the streamfunction–vorticity form on a uniform 601 × 601 grid, driving the
+maximum absolute residual of the governing equations below 1e-10.
 
-On the streamfunction: it is obtained by solving the vorticity Poisson equation
-down to a residual reduction of eight orders, and the solver warns if it does
-not get there. It is then checked against two independent direct integrations,
-of `u` along `y` and of `−v` along `x`. All three agree on `psi_min` to four
-decimal places.
+That formulation contains no pressure. There is no pressure–velocity coupling to
+get wrong, no Rhie–Chow interpolation, no splitting error from SIMPLE, no
+pressure boundary condition. Continuity is satisfied identically by
+construction. None of the failure modes of this solver exist in theirs.
 
-That check earns its place. A single crude integration from one wall reproduces
-`psi_min` to within a few percent but gets `psi_max` wrong by a factor of
-several, because the corner vortices are weak enough to disappear under the
-accumulated integration error. The post-processing needs verifying just as much
-as the solver does.
+### Centreline velocities at Re = 1000
 
+Mean absolute deviation over the tabulated stations. The computed profile is
+interpolated onto the stations of each paper, not the other way round: the
+tabulated positions are the data, our grid is an arbitrary choice.
+
+| Grid | vs Ghia, u | vs Ghia, v | vs Erturk, u | vs Erturk, v |
+|---|---|---|---|---|
+| 32 × 32 | 0.03404 | 0.04321 | 0.05183 | 0.06049 |
+| 64 × 64 | 0.01031 | 0.01001 | 0.01658 | 0.01878 |
+| 128 × 128 | 0.00170 | 0.00398 | 0.00409 | 0.00453 |
+
+All four columns fall monotonically. Against Erturk the successive ratios are
+3.1 and 4.1 for u, 3.2 and 4.1 for v — the factor of four expected of a
+second-order method.
+
+### Why the agreement with Ghia is not the better result
+
+The deviation from Ghia at 128 × 128 is less than half the deviation from
+Erturk. The naive reading is that this solver agrees better with Ghia. Station
+by station near the lid tells a different story:
+
+| y | this solver (128²) | Ghia | Erturk | vs Ghia | vs Erturk |
+|---|---|---|---|---|---|
+| 0.9531 | 0.46789 | 0.46604 | 0.47432 | +0.00185 | −0.00643 |
+| 0.9688 | 0.57747 | 0.57492 | 0.58192 | +0.00255 | −0.00445 |
+| 0.9766 | 0.66151 | 0.65928 | 0.66747 | +0.00223 | −0.00596 |
+
+This solver and Ghia sit on the same side. Erturk sits on the other, and the gap
+between Ghia and Erturk is of the same size as ours. Erturk has closely spaced
+stations in this region, so this is genuine disagreement between the references
+rather than an interpolation artefact — the shear layer under the moving lid,
+where the boundary layer is thinnest.
+
+The explanation is the reason for using two references in the first place. Ghia
+is second-order finite differences on 129 × 129; this solver is second-order
+finite volumes on 128 × 128. They under-resolve the same layer in the same
+direction. A 601 × 601 solution does not. The closer agreement with Ghia
+measures a shared failure mode, not accuracy.
+
+Erturk et al. make the same point about their own comparison, describing the
+results of Ghia et al. as somewhat under-resolved, and noting that at Re = 1000
+even a 401 × 401 second-order grid can be considered so.
+
+### Grid convergence
+
+Three systematically refined uniform grids, refinement ratio 2, all converged to
+a relative residual reduction of nine orders. Richardson extrapolation and the
+Grid Convergence Index of Roache, with the standard safety factor of 1.25.
+
+| | 32² | 64² | 128² | observed p | extrapolated | GCI (fine) |
+|---|---|---|---|---|---|---|
+| `psi_min` | -0.10233 | -0.11351 | -0.11748 | 1.494 | -0.11967 | 2.33% |
+| `psi_max` | 0.00210 | 0.00183 | 0.00176 | 1.948 | 0.001736 | 1.74% |
+
+Reference values, from three independent sources that agree to four significant
+figures: Erturk's own Richardson extrapolation gives -0.118942, the Chebyshev
+spectral solution of Botella & Peyret gives -0.1189366, and §8.4.1 of Ferziger
+gives -0.11893. Table V of Erturk gives 0.0017281 for the larger secondary
+vortex.
+
+Against these, the extrapolated values here are off by 0.61% and 0.46%. The best
+single computation, 128², is off by 1.24% on `psi_min`. Extrapolation halves the
+error using data that was already available.
+
+The GCI on the fine grid is 2.33% against a true error of 1.24% for `psi_min`,
+and 1.74% against 1.73% for `psi_max`. The index estimates the error without
+knowing the answer, and in both cases it is correct or conservative.
+
+**The observed orders are diagnostic.** `psi_max` converges at 1.95, essentially
+second order. `psi_min` converges at 1.49. A second-order scheme should give two
+for both. The discrepancy is consistent with limitation 2 below — the
+first-order pressure treatment at the walls — degrading the global quantity
+while leaving the corner vortex, which sits away from the moving lid, largely
+alone. The grid convergence study identified a defect without any reference
+value being involved.
+
+### Iterative convergence
+
+Discretisation error can only be measured if the iterative error is much smaller
+than it. On the finest grid the default iteration cap stops the solver at a
+residual reduction of seven orders rather than the nine requested. Repeating
+that run to full convergence moves `psi_min` from -0.11747 to -0.11748, the
+observed order from 1.497 to 1.494, and the extrapolated value by 0.02%.
+
+The contamination is therefore negligible here, but it is shown rather than
+assumed. The solver prints a warning when it exits on the iteration cap, and
+that warning is the reason the check was made.
 ## Known limitations
 
 Current properties of the code, not open questions.
