@@ -34,38 +34,105 @@ solver is usually either right or wrong.
 
 ### Why Rhie–Chow is needed
 
-The obvious way to get a velocity on a face is to average the two neighbouring
-cell values. That average carries with it the central pressure gradients of both
-cells, and inside those gradients the term `p_E − p_P` cancels. The face mass
-flux ends up blind to the pressure difference across the very face it crosses.
-A pressure field oscillating from one cell to the next then looks perfectly
-acceptable to the continuity equation, and nothing removes it.
+SIMPLE needs a mass flux on each face, and the natural way to build one is to
+average the velocities of the two cells that share the face:
+`u_e = ½(u_P + u_E)`. That average turns out to be unusable, and the reason is
+not obvious until the algebra is written out.
 
-Rhie–Chow subtracts the averaged gradient and puts back the two-point one. The
-face flux now responds to `p_E − p_P` with coefficient `(V/A_P)_e`. On a smooth
-field the two gradients nearly agree and little changes; on an oscillating field
-they do not, and the oscillation is damped.
+Each cell velocity comes from its own momentum equation, and carries the
+pressure gradient evaluated at that cell centre. On a uniform grid that gradient
+is `(p_E − p_W)/(2Δx)` at `P`, and `(p_EE − p_P)/(2Δx)` at `E`. Averaging the
+two velocities averages the two gradients, and what comes out is
 
-The term is deliberately inconsistent at `O(Δx²)`. The same coefficient
-`(V/A_P)_f` also appears in the pressure-correction equation, and that is not a
-coincidence: it is what makes the correction actually drive the mass imbalance
-to zero.
+    (p_EE + p_E − p_P − p_W) / (4Δx)
+
+Look at which pressures appear. The face between `P` and `E` is straddled by a
+difference that reaches two cells out on either side and never uses `p_E − p_P`
+on its own. The mass flux through a face is blind to the pressure difference
+across that very face.
+
+The consequence is easiest to see with a pressure field that alternates cell by
+cell: `+a, −a, +a, −a`. Substituting into the expression above gives exactly
+zero. That field produces no face pressure gradient anywhere, so it drives no
+mass flux, so the continuity equation cannot see it. Pressure is determined only
+up to an arbitrary amount of it, and in practice the solution grows a
+checkerboard pattern that nothing removes. This is the odd–even decoupling that
+staggered grids avoid by construction and that a collocated grid has to deal
+with explicitly.
+
+Rhie–Chow interpolation fixes it by subtracting the averaged gradient from the
+face velocity and adding back the compact two-point one:
+
+    u_e = ½(u_P + u_E) − (V/A_P)_e · [ (p_E − p_P)/Δx − ½( (dp/dx)_P + (dp/dx)_E ) ]
+
+For the alternating field the bracket is now `2a/Δx` rather than zero, so the
+oscillation finally produces a mass flux, continuity objects, and the mode is
+damped. On a smooth field the compact gradient and the averaged one nearly
+agree, the bracket is small, and almost nothing changes.
+
+Two things are worth being explicit about.
+
+The bracket is a difference between two approximations of the same derivative,
+so it does not vanish as the grid is refined in the sense of being exactly zero —
+it is a deliberate inconsistency of order `Δx²` added to the discretisation. That
+is the price of using a collocated grid, and it is paid knowingly.
+
+The coefficient `(V/A_P)_f` is not chosen for convenience. The same coefficient
+appears in the pressure-correction equation, because the velocity correction
+follows from the same momentum equation. The two are consistent by construction,
+and that consistency is what makes the pressure correction actually drive the
+mass imbalance to zero rather than merely reduce it. It also means the
+Rhie–Chow damping inherits whatever is done to `A_P`, including under-relaxation —
+see limitation 1 below.
 
 ### Why the convection scheme is deferred, not selected
 
-The matrix always holds the upwind coefficients. The difference between the
-face value we want and the upwind one goes into the source term, computed from
-the previous iterate and multiplied by `gamma`.
+Central differencing is second-order accurate and unbounded. Upwind is
+first-order and unconditionally stable. The usual way to offer both is a flag
+that selects which set of coefficients goes into the matrix. This solver does
+something different, and the reason is that the choice is not really between two
+schemes but between two matrices.
 
-At convergence the explicit upwind contribution cancels the implicit one, and
-what remains is `gamma·CDS + (1−gamma)·UDS`. So `gamma = 1` gives pure central
-differences, `gamma = 0` pure upwind, and anything between gives a blend — all
-from one code path, with a matrix that keeps the diagonal dominance of upwind.
+The face value we want is a blend,
 
-§5.8 explains why that matters: of the two schemes only upwind satisfies
-`A_P ≥ Σ|A_l|`, which is the sufficient condition for iterative solvers to
-converge. The practical consequence is measured below.
+    φ_f = γ · φ_f^CDS + (1 − γ) · φ_f^UDS
 
+which can be rewritten, without approximation, as
+
+    φ_f = φ_f^UDS + γ · ( φ_f^CDS − φ_f^UDS )
+
+The first term goes into the matrix. The second is evaluated with the previous
+iterate and moved to the source term. So the matrix always holds upwind
+coefficients, whatever `γ` is, and the blending happens entirely through the
+right-hand side.
+
+At convergence the outer iteration stops changing the solution, so the lagged
+term equals what it would have been if treated implicitly. The explicit upwind
+contribution cancels the implicit one and the equation actually satisfied is the
+one for the blended scheme. Lagging a term changes how fast the iteration
+converges; it does not change what it converges to.
+
+What this buys is diagonal dominance. §5.8 notes that of the two schemes only
+upwind satisfies `A_P ≥ Σ|A_l|`, which is the sufficient condition for iterative
+solvers to converge. With central coefficients in the matrix, the condition is
+lost as soon as the cell Peclet number exceeds 2, and SIP is left solving a
+system it has no guarantee of handling. The measured consequence is in the
+results section: on a 32 × 32 grid at Re = 1000, the earlier version of this
+solver with central coefficients in the matrix diverges outright, while the
+deferred-correction version converges to the same answer the finer grids agree
+on.
+
+There are two costs, and neither is hidden.
+
+The deferred term is lagged, so it slows the outer iteration. At `γ = 1` in a
+strongly convective flow, more outer iterations are needed than the same problem
+would need with central coefficients implicit — assuming those converged at all.
+
+Changing the matrix changes `A_P`, and `A_P` feeds Rhie–Chow and the
+pressure-correction equation. The converged solution is therefore not identical
+to what a central-coefficient matrix would produce; it is a different
+discretisation of the same equations. The results section quantifies the
+difference and shows it shrinking with refinement, as it must.
 ### The pressure system is singular
 
 Pressure is only defined up to a constant, so the pressure-correction matrix has
